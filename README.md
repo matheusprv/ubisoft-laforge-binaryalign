@@ -27,6 +27,23 @@ Il a un canapé .
 
 We used the same datasets as https://github.com/sufenlp/AccAlign.
 
+### Converting XL-WA Portuguese data
+
+To split `dataset/XL-WA/pt/{train,dev,test}.tsv` into the expected files, run:
+
+```shell
+python3 convert_xlwa_pt.py
+```
+
+This creates `dataset/portugues-ingles/{train,dev,test}`. Each split contains
+`source.src` (first column), `target.tgt` (second column), and `align.talp`
+(third column). To change the alignment indices from zero-based to one-based,
+use:
+
+```shell
+python3 convert_xlwa_pt.py --one-indexed
+```
+
 ## Training
 
 ```shell

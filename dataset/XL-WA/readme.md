@@ -1,0 +1,1 @@
+https://github.com/SapienzaNLP/XL-WA/tree/main/data/pt 

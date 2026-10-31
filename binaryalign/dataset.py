@@ -58,109 +58,98 @@ class SpanTokenDataset:
             self.data = self.data + self.data_2
         
         
-    def prepare(
-        self,
-        lines_src: List[str],
-        lines_tgt: List[str],
-        gold_lines: List[str],
-        data: List[dict],
-        use_reverse: bool = False
-        ) -> None:
-        pbar = tqdm(total=len(lines_src))
-        
-        for _, (line_src, line_tgt, gold_line) in enumerate(zip(lines_src, lines_tgt, gold_lines)):
-            pbar.update(1)
-            examples = []
-            
-            if use_reverse:
-                line_src, line_tgt = line_tgt, line_src
-                
-            sent_src, sent_tgt = line_src.strip().split(), line_tgt.strip().split()
-                
-            if len(sent_src) == 0 or len(sent_tgt) == 0:
-                continue
-            
-            for i, _ in enumerate(sent_src):
-                examples.append(sent_src[:i] + [self.context_sep] + [sent_src[i]] + [self.context_sep] + sent_src[i+1:])
-                
-            
-            token_src, token_tgt = [[self.tokenizer.tokenize(word)  for word in sent_src] for sent_src in examples], [self.tokenizer.tokenize(word) for word in sent_tgt]
-                
-            wid_src, wid_tgt = [[self.tokenizer.convert_tokens_to_ids(x) for x in token ] for token in token_src], [self.tokenizer.convert_tokens_to_ids(x) for x in token_tgt]
-            
-            input_ids_src = torch.tensor([self.tokenizer.prepare_for_model(list(itertools.chain(*wid)), max_length=512, truncation=True)["input_ids"] for wid in wid_src])
-            input_ids_tgt = self.tokenizer.prepare_for_model(list(itertools.chain(*wid_tgt)), return_tensors='pt',
-                                                            max_length=512, truncation=True)['input_ids'][1:]
-            
-            input_ids_tgt = input_ids_tgt.repeat(len(input_ids_src),1)
-        
-            bpe2word_map_tgt = []
-            for i, word_list in enumerate(token_tgt):
-                bpe2word_map_tgt += [i for _ in word_list]
-            bpe2word_map_tgt = torch.tensor(bpe2word_map_tgt + [-1])
-            bpe2word_map_src = torch.ones_like(input_ids_src[0])*-1
-            
-            input_ids = torch.cat((input_ids_src, input_ids_tgt), axis=-1)[:, :512]
-            labels_src = torch.ones_like(input_ids_src)*-100
-            labels_tgt = torch.zeros_like(input_ids_tgt)
-            
+    def prepare(self, lines_src, lines_tgt, gold_lines, data, use_reverse=False):
+        # One training example per source word, for both translation directions.
+        for line_number, (raw_src, raw_tgt, gold_line) in enumerate(
+            tqdm(zip(lines_src, lines_tgt, gold_lines), total=len(lines_src)), start=1
+        ):
+            original_src = raw_src.split()
+            original_tgt = raw_tgt.split()
+            if not original_src or not original_tgt:
+                raise ValueError(f"Empty sentence at line {line_number}")
+            sent_src, sent_tgt = (
+                (original_tgt, original_src) if use_reverse
+                else (original_src, original_tgt)
+            )
+
+            target_tokens = [self.tokenizer.convert_tokens_to_ids(self.tokenizer.tokenize(w)) for w in sent_tgt]
+            target_flat = list(itertools.chain.from_iterable(target_tokens))
+            target_ids = self.tokenizer.prepare_for_model(target_flat, add_special_tokens=True)["input_ids"][1:]
+            target_map = [i for i, parts in enumerate(target_tokens) for _ in parts] + [-1]
+            if len(target_ids) != len(target_map):
+                raise ValueError(f"Unexpected target tokenization at line {line_number}")
+
+            links = []
+            sure, possible = set(), set()
+            for item in gold_line.split():
+                a, b = parse_single_alignment(item, self.gold_one_index)
+                if not (0 <= a < len(original_src) and 0 <= b < len(original_tgt)):
+                    raise ValueError(f"Out-of-range alignment {item} on line {line_number}")
+                is_sure = '-' in item
+                if is_sure:
+                    sure.add((a, b))
+                if is_sure or not self.ignore_possible_alignments:
+                    possible.add((a, b))
+                    links.append((b, a) if use_reverse else (a, b))
             if not use_reverse:
-                self.sure.append(set())
-                self.possible.append(set())
-            
-            for src_tgt in gold_line.strip().split():
-                
-                if 'p' in src_tgt:
-                    if self.ignore_possible_alignments:
-                        continue
-                    wsrc, wtgt = src_tgt.split('p')
-                else:
-                    wsrc, wtgt = src_tgt.split('-')
+                self.sure.append(sure)
+                self.possible.append(possible)
 
-                if use_reverse:
-                    wtgt, wsrc= (int(wsrc), int(wtgt)) if not self.gold_one_index else (
-                        int(wsrc) - 1, int(wtgt) - 1)
-                else:
-                    wsrc, wtgt= (int(wsrc), int(wtgt)) if not self.gold_one_index else (
-                        int(wsrc) - 1, int(wtgt) - 1)
-                   
-                if wsrc<len(labels_tgt):
-                    labels_tgt[wsrc,:] = torch.where(bpe2word_map_tgt==wtgt, 1, labels_tgt[wsrc,:])
-                           
-                if not use_reverse:
-                    # only do it for the sure alignment
-                    sure_alignment = True if '-' in src_tgt else False
-                    alignment_tuple = parse_single_alignment(src_tgt, self.gold_one_index)
+            sentence_examples = []
+            separator = self.context_sep.strip()
+            for source_index in range(len(sent_src)):
+                marked = sent_src[:source_index] + [separator, sent_src[source_index], separator] + sent_src[source_index+1:]
+                source_ids = self.tokenizer.prepare_for_model(
+                    list(itertools.chain.from_iterable(
+                        self.tokenizer.convert_tokens_to_ids(self.tokenizer.tokenize(w)) for w in marked
+                    )), add_special_tokens=True
+                )["input_ids"]
+                if len(source_ids) + len(target_ids) > 512:
+                    raise ValueError(
+                        f"Line {line_number} exceeds 512 tokens when concatenated "
+                        f"({len(source_ids)} + {len(target_ids)}). Split or filter this pair."
+                    )
+                sentence_examples.append(source_ids)
 
-                    if sure_alignment:
-                        self.sure[-1].add(alignment_tuple)
-                    if sure_alignment or not self.ignore_possible_alignments:
-                        self.possible[-1].add(alignment_tuple)
-                
-            labels = torch.cat((labels_src, labels_tgt),1)
-            if input_ids[0, -1]==self.tokenizer.eos_token_id:
-                labels[:,-1] = -100
-            
+            # All examples from the same sentence must have equal length in inference.
+            source_width = max(map(len, sentence_examples))
+            if source_width + len(target_ids) > 512:
+                raise ValueError(f"Line {line_number} exceeds context length")
+            ids_batch, labels_batch = [], []
+            map_values = [-1] * source_width + target_map
+            for source_index, source_ids in enumerate(sentence_examples):
+                padded_src = source_ids + [self.tokenizer.pad_token_id] * (source_width - len(source_ids))
+                ids = padded_src + target_ids
+                labels = [-100] * source_width + [0] * len(target_ids)
+                for a, b in links:
+                    if a == source_index:
+                        for k, target_word in enumerate(target_map):
+                            if target_word == b:
+                                labels[source_width + k] = 1
+                labels[-1] = -100
+                ids_batch.append(ids)
+                labels_batch.append(labels)
+
             if self.do_inference:
-                bpe2word_map = torch.cat((bpe2word_map_src, bpe2word_map_tgt), 0)
-                data.append(
-                        {
-                            "input_ids": input_ids,
-                            "attention_mask": torch.ones_like(input_ids),
-                            "labels": labels,
-                            "bpe2word_map": bpe2word_map
-                        }
-                    )
+                all_ids = torch.tensor(ids_batch, dtype=torch.long)
+                all_labels = torch.tensor(labels_batch, dtype=torch.long)
+                data.append({
+                    "input_ids": all_ids,
+                    "attention_mask": torch.tensor([
+                        [int(j < len(sentence_examples[i])) for j in range(source_width)]
+                        + [1] * len(target_ids) for i in range(len(sent_src))
+                    ], dtype=torch.long),
+                    "labels": all_labels,
+                    "bpe2word_map": torch.tensor(map_values, dtype=torch.long),
+                })
             else:
-                for input_id, label in zip(input_ids.tolist(), labels.tolist()):
-                    data.append(
-                        {
-                            "input_ids": input_id,
-                            "attention_mask": [1]* len(input_id),
-                            "labels": label[:512]
-                        }
-                    )
-            
+                for i, ids in enumerate(ids_batch):
+                    data.append({
+                        "input_ids": ids,
+                        "attention_mask": [int(j < len(sentence_examples[i])) for j in range(source_width)] + [1] * len(target_ids),
+                        "labels": labels_batch[i],
+                    })
+
     def __len__(self):
         return len(self.data)
     

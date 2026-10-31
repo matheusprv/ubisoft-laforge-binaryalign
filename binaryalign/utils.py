@@ -249,7 +249,7 @@ def calculate_metrics(array_sure, array_possible, array_hypothesis):
 
     if sum_a!=0:
         precision = sum_a_intersect_p / sum_a
-        recall = sum_a_intersect_s / sum_s
+        recall = sum_a_intersect_s / sum_s if sum_s else 0.0
         aer = 1.0 - ((sum_a_intersect_p + sum_a_intersect_s) / (sum_a + sum_s))
     else:
         precision = 0.

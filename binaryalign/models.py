@@ -49,9 +49,9 @@ class AutoModelForBinaryTokenClassification:
         Returns:
             A model instance of either RobertaForBinaryTokenClassification or DebertaForBinaryTokenClassification.
         """
-        if "roberta" in model_name_or_path:
+        if config.model_type in ("roberta", "xlm-roberta"):
             return RobertaForBinaryTokenClassification.from_pretrained(model_name_or_path, config=config)
-        elif "deberta" in model_name_or_path:
+        elif config.model_type == "deberta-v2":
             return DebertaForBinaryTokenClassification.from_pretrained(model_name_or_path, config=config)
         else:
             raise NotImplementedError(

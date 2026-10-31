@@ -1,9 +1,9 @@
 import torch
+from torch.optim import AdamW
 from transformers import (
     AutoTokenizer, 
     AutoConfig, 
     HfArgumentParser, 
-    AdamW, 
     get_linear_schedule_with_warmup
 )
 
@@ -72,9 +72,12 @@ def main(args: ScriptArguments):
         save_path = os.path.join(args.save_path, args.name)
         args.save_path = save_path
         log_dir = os.path.join(args.log_dir, args.name)
+        if not args.save_path or not args.log_dir or not args.name:
+            raise ValueError("For training, pass --save_path, --log_dir and --name")
+        os.makedirs(log_dir, exist_ok=True)
         if args.do_train:
             accelerator = Accelerator(
-                mixed_precision= args.mixed_precision,
+                mixed_precision=("no" if not torch.cuda.is_available() else args.mixed_precision),
                 log_with=args.log_with,
                 project_dir=log_dir
                 )
@@ -90,7 +93,7 @@ def main(args: ScriptArguments):
     context_sep = " [WORD_SEP] "
     if not args.is_pretrained:
         print("Adding a special token")
-        special_tokens_dict = {"additional_special_tokens": [context_sep]}
+        special_tokens_dict = {"additional_special_tokens": [context_sep.strip()]}
         tokenizer.add_special_tokens(special_tokens_dict)
         model.resize_token_embeddings(len(tokenizer))          
        
@@ -120,7 +123,7 @@ def main(args: ScriptArguments):
             batch_size=args.bs
         )
         number_of_steps = len(train_dataloader) * args.num_train_epochs
-        warmup_steps = args.warmup_ratio*number_of_steps
+        warmup_steps = int(args.warmup_ratio * number_of_steps)
         
         no_decay = ["bias", "LayerNorm.weight"]
         optimizer_grouped_parameters = [
@@ -247,7 +250,7 @@ def main(args: ScriptArguments):
                     )
                 
             accelerator.wait_for_everyone()
-            if args.save_strategy=="epoch" and epoch!=(args.num_train_epochs-1) and aer<best_aer:
+            if args.do_eval and args.save_strategy=="epoch" and epoch!=(args.num_train_epochs-1) and aer<best_aer:
                 unwrapped_model = accelerator.unwrap_model(model)
                 accelerator.print("Found a better model. Saving the model")
                 save_epoch_path = os.path.join(args.save_path, f"checkpoint_{epoch}")
@@ -259,9 +262,10 @@ def main(args: ScriptArguments):
         accelerator.print("*** End of Training ***")
         accelerator.print("*** Saving the model... ***")
         accelerator.wait_for_everyone()
-        unwrapped_model = accelerator.unwrap_model(model)
-        unwrapped_model.save_pretrained(args.save_path)
-        tokenizer.save_pretrained(args.save_path)
+        if accelerator.is_main_process:
+            unwrapped_model = accelerator.unwrap_model(model)
+            unwrapped_model.save_pretrained(args.save_path)
+            tokenizer.save_pretrained(args.save_path)
             
             
 if __name__=="__main__":
