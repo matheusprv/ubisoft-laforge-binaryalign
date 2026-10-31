@@ -6,10 +6,10 @@ python3 train.py \
   --model_path microsoft/mdeberta-v3-base \
   --save_path outputs \
   --log_dir logs \
-  --name ingles_portugues \
-  --num_train_epochs 5 \
+  --name ingles_portugues_2 \
+  --num_train_epochs 5z \
   --learning_rate 2e-5 \
-  --bs 8 \
+  --bs 512 \
   --do_train \
   --do_eval \
   --is_pretrained False
