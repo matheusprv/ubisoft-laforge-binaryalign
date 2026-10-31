@@ -12,4 +12,5 @@ python3 train.py \
   --bs 512 \
   --do_train \
   --do_eval \
-  --is_pretrained False
+  --is_pretrained False \
+  --gold_one_index false
